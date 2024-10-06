@@ -13,15 +13,15 @@ from models.GA.ga_operators import Ops
 
 #trainer = Trainer()
 class Trainer():
-    def __init__(self):
-        self.active = 100
-        self.cur = 100
+    def __init__(self, start_active):
+        self.active = start_active
+        self.cur = start_active
         self.bank = 0
 
     #data - R3 набор временных рядов подряд идущих разных временных отрезков
     def reward(self, data, model=None):
         rews = []
-        #x - набор подряд идущих временных рядов
+        #x - набор подряд идущих отрезков временных рядов R2
         for x in data:
             cur, bank = self.cur, self.bank
             #t - один временной ряд
@@ -40,13 +40,12 @@ class Trainer():
             rews.append(cur + bank*price)
         return np.mean(rews)
 
-trainer = Trainer()
+    def count_rewards(self, data, population: list[Chromosome]):
+        rewards = []
+        for chromosome in population:
+            rewards.append(self.reward(data, chromosome))
+        return rewards
 
-def count_rewards(data, population: list[Chromosome]):
-    rewards = []
-    for chromosome in population:
-        rewards.append(trainer.reward(chromosome, data))
-    return rewards
 
 def choose_parents(population: list[Chromosome], target_values: tuple, size: int):
     size = min(size, len(population))
@@ -127,7 +126,8 @@ def check_convergence(rewards, eps) -> bool:
         return False
 
 # train_data - массив из R3. 1dim - временной ряд, 2dim - набор временных рядов подряд идущих, достаточно продолжительных, 3dim - набор различных отрезков временных рядов
-def cycle(start_population: list[Chromosome], train_data, n_max, eps, batch_size):
+def cycle(start_population: list[Chromosome], train_data, n_max, eps, start_active, batch_size):
+    trainer = Trainer(start_active)
     rewards = []
     rewards.append(-eps*3.3)
     rewards.append(-eps*2)
@@ -136,9 +136,9 @@ def cycle(start_population: list[Chromosome], train_data, n_max, eps, batch_size
     Ops.nose(start_population)
     while epoch < n_max:
         #2.  высчитываем награды
-        idxs = np.random.choice([x for x in range(len(train_data))], min(batch_size, train_data.shape[0]))
-        cur_data = [train_data[idx] for idx in idxs]
-        cur_rewards = count_rewards(cur_data, start_population)
+        idxs = np.random.choice([x for x in range(len(train_data))], min(batch_size, train_data.shape[0])) #  R3
+        cur_data = [train_data[idx] for idx in idxs] #  R3
+        cur_rewards = trainer.count_rewards(cur_data, start_population)
         rewards.append(sum(cur_rewards))
 
         #3. Проверяем, что награды отличаются

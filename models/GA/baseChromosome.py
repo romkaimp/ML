@@ -22,8 +22,9 @@ class Chromosome(ABC, Module):
         pass
 
 class LinearChromosome(Chromosome):
-    def __init__(self, input, output):
+    def __init__(self, input, output, model):
         super().__init__()
+        self.model = model
         self.input = input
         self.output = output
 
@@ -33,6 +34,8 @@ class LinearChromosome(Chromosome):
 
     def forward(self, x):
         super().__init__()
+        y = self.model.get_prediction().predicted_mean()
+
         x = self.lr1(x)
         x = self.activation(x)
         return self.lr2(x)
