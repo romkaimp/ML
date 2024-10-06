@@ -7,13 +7,16 @@ from numpy import dtype
 from torch.nn.utils.rnn import pad_sequence
 
 class GRUNetwork(nn.Module):
-    def __init__(self, input_size, hidden_size, num_layers, output_length, output_size=1, components=3):
+    def __init__(self, input_size, hidden_size, num_layers, output_length, output_size=1, *, components=3, mean=0, scale=1):
         super(GRUNetwork, self).__init__()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.output_length = output_length
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.components = components
+
+        self.mean = mean
+        self.scale = scale
         # x.shape = (b_size, input_size)
         # Настройка GRU слоя
         self.gru = nn.GRU(components + input_size, hidden_size, num_layers, batch_first=True, dropout=0.1)
@@ -29,9 +32,10 @@ class GRUNetwork(nn.Module):
         # Для каждого временного ряда в батче проводим EMD и разбиваем его на три дополнительных временных ряда
         decomposed_series = []
         for i in range(batch_size):
-            imfs = ceemdan(x[i].cpu().numpy().squeeze())  # проводим EMD на временном ряде
+            k = (x[i].cpu().numpy().squeeze() - self.mean)/self.scale
+            imfs = ceemdan(k)  # проводим EMD на временном ряде
             imfs = imfs[:self.components]  # берем только три первых IMFs
-            imfs = torch.cat((torch.tensor(imfs, dtype=torch.float32), x[i].transpose(0, 1)), dim=0)
+            imfs = torch.cat((x[i].transpose(0, 1), torch.tensor(imfs, dtype=torch.float32)), dim=0)
             # Добавляем -1 размер для консистенции
             decomposed_series.append(imfs.to(self.device))
 
@@ -48,4 +52,4 @@ class GRUNetwork(nn.Module):
             outputs.append(output.unsqueeze(1))
             out_last = self.decoder(output.unsqueeze(1), h_n)[0].squeeze(1)
 
-        return torch.cat(outputs, dim=1)
+        return torch.cat(outputs, dim=1)*self.scale + self.mean
