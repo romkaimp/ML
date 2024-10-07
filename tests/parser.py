@@ -21,7 +21,7 @@ symbols = [ticker['symbol'] for ticker in top_tickers]
 
 for symbol in symbols:
     dir = os.path.dirname(os.path.abspath(__file__))
-    file = os.path.join(dir, 'networkTraining.py')
+    file = os.path.join(dir, 'data_preprocessing1.py')
     dir = Path(os.path.join(dir, '..\\.venv\\Scripts\\python.exe')).resolve()
     cp = subprocess.run([dir, file, symbol])
     print(cp.returncode, cp.stdout)
