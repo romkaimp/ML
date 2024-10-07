@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-from PyEMD import CEEMDAN
 from builtins import RuntimeError
 
 from numpy import dtype
@@ -26,20 +25,13 @@ class GRUNetwork(nn.Module):
 
     def forward(self, x):
         batch_size, series_number, series_length = x.size()
-        # CEEMDAN decomposition
-        ceemdan = CEEMDAN(parallel=True)
 
-        # Для каждого временного ряда в батче проводим EMD и разбиваем его на три дополнительных временных ряда
-        decomposed_series = []
-        for i in range(batch_size):
-            k = (x[i].cpu().numpy().squeeze() - self.mean)/self.scale
-            imfs = ceemdan(k)  # проводим EMD на временном ряде
-            imfs = imfs[:self.components]  # берем только три первых IMFs
-            imfs = torch.cat((x[i].transpose(0, 1), torch.tensor(imfs, dtype=torch.float32)), dim=0)
-            # Добавляем -1 размер для консистенции
-            decomposed_series.append(imfs.to(self.device))
+        normalized_x = (x.squeeze() - self.mean) / self.scale
 
-        x_decomposed = pad_sequence(decomposed_series, batch_first=True)
+        k = torch.fft.rfft(normalized_x, dim=1)
+
+        frequency_component = k.real  # Действительная часть
+        x_decomposed = torch.cat((frequency_component.unsqueeze(-1), normalized_x.unsqueeze(-1)), dim=-1)
         x_decomposed = x_decomposed.permute(0, 2, 1).reshape(x_decomposed.shape[0], -1, series_length+self.components)
 
         h0 = torch.zeros(self.num_layers, batch_size, self.hidden_size).to(self.device)
