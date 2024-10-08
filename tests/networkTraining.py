@@ -5,7 +5,7 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset
 
 import boto3
-import click
+
 
 SYMBOL = "SOLUSDT"
 
@@ -52,8 +52,9 @@ gru.to(device)
 
 criterion = nn.MSELoss()
 optimizer = optim.Adam(gru.parameters(), lr=0.9)
-scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9)
-
+scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=1.3, last_epoch=10)
+scheduler2 = optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9)
+print(optimizer.state_dict)
 # Обучение модели
 num_epochs = 50
 patience = 3

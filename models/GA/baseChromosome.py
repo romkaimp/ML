@@ -22,19 +22,28 @@ class Chromosome(ABC, Module):
         pass
 
 class LinearChromosome(Chromosome):
-    def __init__(self, input, output, model):
+    def __init__(self, input, output, model, pred_length, hidden_size):
         super().__init__()
-        self.model = model
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.pred_length = pred_length
+        self.model = model.to(self.device)
         self.input = input
         self.output = output
 
-        self.lr1 = nn.Linear(input, input*10)
+        self.conv = nn.Conv1d(10, 15, 3).to(self.device)
+        self.lr1 = nn.Linear(20 - 3 + 1, hidden_size).to(self.device)
         self.activation = nn.ReLU()
-        self.lr2 = nn.Linear(input*10, output)
+        self.lr2 = nn.Linear(pred_length, hidden_size).to(self.device)
+        self.last = nn.Linear(hidden_size, 1).to(self.device)
 
     def forward(self, x):
         super().__init__()
-        y = self.model.get_prediction().predicted_mean()
+        batch_size, series_number, series_length = x.size()
+        x = x.to(self.device)
+
+        self.model.eval()
+        y = self.model(x).squeeze()
+        y = self.lr2(y) #[batch_size, pred_length] -> [batch_size, hidden_size]
 
         x = self.lr1(x)
         x = self.activation(x)

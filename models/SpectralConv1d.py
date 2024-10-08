@@ -24,25 +24,24 @@ class SpectralConv1d(Module):
         self.imag_weights = nn.Parameter(torch.randn(n_in, n_out, modes))
 
     def comp_mult(self, x, w):
-        return einsum("iM,ioM->oM", x, w)
+        return einsum("biM,ioM->boM", x, w)
 
     def forward(self, x):
 
-        channels, spatial_points = x.shape
-        x_hat = rfft(x)
-
-        x_hat_under_modes = x_hat[:, :self.modes]
-
+        batch_size, channels, spatial_points = x.shape
+        x_hat = rfft(x, axis=-1)
+        x_hat_under_modes = x_hat[:, :, :self.modes]
+        #print("x_hat_um:", x_hat.shape)
         weights = self.real_weights + 1j*self.imag_weights
         out_hat_under_modes = self.comp_mult(x_hat_under_modes, weights)
-        out_hat = torch.zeros(size=(self.out_channels, spatial_points), dtype=x_hat.dtype)
+        #print("x shape mult:", out_hat_under_modes.shape)
 
-        target_shape = (self.out_channels, spatial_points)
-        pad = (0, target_shape[1] - out_hat_under_modes.shape[1], 0, target_shape[0] - out_hat_under_modes.shape[0])
+        target_shape = (batch_size, self.out_channels, spatial_points)
+        pad = (0, target_shape[2] - out_hat_under_modes.shape[2], 0, target_shape[1] - out_hat_under_modes.shape[1])
         out_hat = F.pad(out_hat_under_modes, pad, "constant", 0)
 
-        out = irfft(out_hat, n=spatial_points)
-
+        out = irfft(out_hat, n=spatial_points, axis=-1)
+        #print("out:", out.shape)
         return out
 
 class FNOBlock1d(Module):
@@ -56,6 +55,7 @@ class FNOBlock1d(Module):
         self.spectral_conv = SpectralConv1d(n_in, n_out, modes)
         self.conv_layer = Conv1d(n_in, n_out, 1)
         self.activation = activation
+
     def forward(self, x):
         return self.activation(
             self.spectral_conv(x) + self.conv_layer(x))
@@ -70,6 +70,7 @@ class FNO1d(Module):
                  n_blocks=4
                  ):
         super().__init__()
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.lifting = Conv1d(n_in, width, 1)
 
         self.FNOBlocks = []
@@ -81,7 +82,7 @@ class FNO1d(Module):
         self.projection = Conv1d(width, n_out, 1)
 
     def forward(self, x):
-
+        x = x.to(self.device)
         x = self.lifting(x)
 
         for FNOBlock in self.FNOBlocks:

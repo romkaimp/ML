@@ -21,8 +21,8 @@ class Trainer():
     #data - R3 набор временных рядов подряд идущих разных временных отрезков
     def reward(self, data, model=None):
         rews = []
-        #x - набор подряд идущих отрезков временных рядов R2
-        for x in data:
+        #x - набор подряд идущих отрезков временных рядов R2 [[..., ...],
+        for x in data:                                     #  [.., ...]]
             cur, bank = self.cur, self.bank
             #t - один временной ряд
             price = 0
