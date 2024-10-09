@@ -21,11 +21,16 @@ class Trainer():
     #data - R3 набор временных рядов подряд идущих разных временных отрезков
     def reward(self, data, model=None):
         rews = []
+        #data - один батч
         #x - набор подряд идущих отрезков временных рядов R2 [[..., ...],
         for x in data:                                     #  [.., ...]]
             cur, bank = self.cur, self.bank
+            batches, length = x.size()
+            x = x.reshape(batches, length, 1)
             #t - один временной ряд
             price = 0
+            y, amount = model(x) #[[], [], [], [], []]
+
             for t in x:
                 y, amount = model(t)
                 if y > 0.9:

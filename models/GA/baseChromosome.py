@@ -3,6 +3,7 @@ from torch.nn import Module
 import torch.nn as nn
 from typing import Optional
 from abc import ABC, abstractmethod
+from models.TS.GRUPipeline import Predictor
 import scipy
 
 class Chromosome(ABC, Module):
@@ -22,7 +23,7 @@ class Chromosome(ABC, Module):
         pass
 
 class LinearChromosome(Chromosome):
-    def __init__(self, input, output, model, pred_length, hidden_size):
+    def __init__(self, input, output, model: Predictor, pred_length, hidden_size):
         super().__init__()
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.pred_length = pred_length
