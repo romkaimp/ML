@@ -10,46 +10,46 @@ from copy import deepcopy
 from scipy.special import softmax
 from models.GA.baseChromosome import Chromosome, LinearChromosome
 from models.GA.ga_operators import Ops
+from torch.utils.data import DataLoader, TensorDataset
 
 #trainer = Trainer()
-class Trainer():
-    def __init__(self, start_active):
-        self.active = start_active
-        self.cur = start_active
-        self.bank = 0
-
+class Trainer:
     #data - R3 набор временных рядов подряд идущих разных временных отрезков
-    def reward(self, data, model=None):
+    def reward(self, data: torch.Tensor, model: Chromosome=None):
         rews = []
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         #data - один батч
-        #x - набор подряд идущих отрезков временных рядов R2 [[..., ...],
-        for x in data:                                     #  [.., ...]]
-            cur, bank = self.cur, self.bank
+        #x - набор подряд идущих отрезков временных рядов R2 [[..., ...], [.., ...]]
+        for x in data:
             batches, length = x.size()
-            x = x.reshape(batches, length, 1)
-            #t - один временной ряд
-            price = 0
-            y, amount = model(x) #[[], [], [], [], []]
+            x_model = x.reshape(batches, length, 1)
+            price = x[-1, -1].item()
+            y, amount = model(x_model) #[[], [], [], [], []], [[], [], [], [], []] batch_size, 1
+            y, amount = y.squeeze(), amount.squeeze()
 
-            for t in x:
-                y, amount = model(t)
-                if y > 0.9:
-                    c = cur
-                    bank += min(amount, cur)/t[-1]
-                    cur -= min(amount, c)
-                elif y < 0.1:
-                    b = bank
-                    bank -= min(amount, bank)/t[-1]
-                    cur += min(amount, b)
-                price = t[-1]
-            rews.append(cur + bank*price)
-        return np.mean(rews)
+            bank = torch.tensor(0, device=device).float()
+            account = torch.tensor(0, device=device).float()
 
-    def count_rewards(self, data, population: list[Chromosome]):
+            #amount - всегда количество покупаемой/продаваемой валюты
+            #y - "уверенность" модели в покупке/продаже
+            condition1 = y > 0.85
+            account += torch.sum(amount[condition1].float())
+            bank -= torch.sum(x[condition1, -1].float() * amount[condition1].float())
+
+            condition2 = y < 0.15
+            account -= torch.sum(amount[condition2].float())
+            bank += torch.sum(x[condition2, -1].float() * amount[condition2].float())
+
+            rews.append((bank + account*price).item())
+
+        rews_tensor = torch.tensor(rews, device=device)
+        return rews_tensor.mean().item()
+
+    def count_rewards(self, data: torch.Tensor, population: list[Chromosome]):
         rewards = []
         for chromosome in population:
             rewards.append(self.reward(data, chromosome))
-        return rewards
+        return tuple(rewards)
 
 
 def choose_parents(population: list[Chromosome], target_values: tuple, size: int):
@@ -61,17 +61,16 @@ def choose_parents(population: list[Chromosome], target_values: tuple, size: int
     new_population = [population[i] for i in new_population_idx]
     return new_population
 
-def combine_chromosomes(population: list[Chromosome], new_size, prob):
+def combine_chromosomes(population: list[Chromosome], new_size, prob=0.3):
     new_population = []
     crossover = []
     for i in range(len(population)):
-        crossover[i] = np.random.choice([j if j != i else (j**2)%len(population) for j in range(len(population))], 1)
+        crossover.append(np.random.choice([j if j != i else (j**2)%len(population) for j in range(len(population))], 1)[0])
     #Выбрали пары для каждой хромосомы
     #
     for i in range(len(population)):
         parent1: Chromosome = population[i]
         parent2 = population[crossover[i]]
-
         new_model1: Chromosome = LinearChromosome(*parent1.get_params)
         new_model2: Chromosome = LinearChromosome(*parent1.get_params)
 
@@ -83,10 +82,9 @@ def combine_chromosomes(population: list[Chromosome], new_size, prob):
 
         p_state1: dict = copy.deepcopy(parent1.state_dict())
         p_state2: dict = copy.deepcopy(parent2.state_dict())
-
-
-        for name, layer1, _, layer2, _, p_layer1, _, p_layer2 in zip(cur_state1.items(), cur_state2.items(), parent1.state_dict().items(), parent2.state_dict().items()):
-            if name not in parent1.trainable_layers:
+        print("i:", i)
+        for (name, layer1), (_, layer2), (_, p_layer1), (_, p_layer2) in zip(cur_state1.items(), cur_state2.items(), parent1.state_dict().items(), parent2.state_dict().items()):
+            if name not in parent1.trainable_layers():
                 continue
             else:
                 new_layer1, new_layer2 = Ops.combinate_parents(layer1, layer2, prob)
@@ -112,52 +110,71 @@ def combine_chromosomes(population: list[Chromosome], new_size, prob):
         return pop
     elif len(new_population) < new_size:
         return combine_chromosomes(new_population, new_size)
+    else:
+        return new_population
 
-def mutate_population(population: list[Chromosome], prob):
+def mutate_population(population: list[Chromosome], prob) -> None:
     for i in range(len(population)):
 
         state: dict = copy.deepcopy(population[i].state_dict())
         for name, layer in state.items():
-            if name not in population[i].trainable_layers:
+            if name not in population[i].trainable_layers():
                 continue
             else:
                 Ops.combinate_self(layer, prob)
 
-def check_convergence(rewards, eps) -> bool:
-    rew = [sum(arr) for arr in rewards]
-    if rew[-1] - rew[-2] < eps:
+
+def check_convergence(rewards: list, eps: float) -> bool:
+    if abs(rewards[-1] - rewards[-2]) < eps:
         return True
     else:
         return False
 
 # train_data - массив из R3. 1dim - временной ряд, 2dim - набор временных рядов подряд идущих, достаточно продолжительных, 3dim - набор различных отрезков временных рядов
-def cycle(start_population: list[Chromosome], train_data, n_max, eps, start_active, batch_size):
-    trainer = Trainer(start_active)
-    rewards = []
-    rewards.append(-eps*3.3)
-    rewards.append(-eps*2)
+def cycle(start_population: list[Chromosome], train_data: DataLoader,
+          n_max=20, eps=0.01, parents_number=3, new_pop=12, prob=0.2):
+    trainer = Trainer()
+    best_model = deepcopy(start_population[0])
+    rewards = [-3.4 * eps, -2 * eps]
     epoch = 0
-    # 1.  добавляем небольшой шум изначальным распределениям
+    # 1.  добавляем небольшой шум изначальным распределениям (опционально, т.к. торч это делает)
     Ops.nose(start_population)
-    while epoch < n_max:
-        #2.  высчитываем награды
-        idxs = np.random.choice([x for x in range(len(train_data))], min(batch_size, train_data.shape[0])) #  R3
-        cur_data = [train_data[idx] for idx in idxs] #  R3
-        cur_rewards = trainer.count_rewards(cur_data, start_population)
-        rewards.append(sum(cur_rewards))
-
-        #3. Проверяем, что награды отличаются
-        if check_convergence(rewards, eps):
+    flag = False
+    patience = 3
+    patience_counter = 0
+    while epoch < n_max or rewards[-1] < 0:
+        if flag:
             break
+        for i, data in enumerate(train_data):
+            print("step:", i)
+            data = data[0]
+            #2.  высчитываем награды
+            cur_rewards = trainer.count_rewards(data, start_population)
+            rewards.append(sum(cur_rewards))
+            if rewards[-1] > rewards[-2]:
+                max_reward_index = cur_rewards.index(max(cur_rewards))
+                best_model = copy.deepcopy(start_population[max_reward_index])
 
-        #4.  выбираем родителей генотипически
-        parents = choose_parents(start_population, rewards[-1], 3)
+            #3. Проверяем, что награды отличаются
+            if epoch > 2 and check_convergence(rewards, eps):
+                patience_counter += 1
+                if patience_counter >= patience:
+                    flag = True
+                    break
+            else:
+                patience_counter = 0
 
-        #5. Скрещиваем родительские гены
-        population = combine_chromosomes(parents, 12, 0.1)
+            #4.  выбираем родителей генотипически
+            parents = choose_parents(start_population, cur_rewards, size=parents_number)
 
-        #6. Мутируем родительские гены
-        population = mutate_population(population, 0.1)
+            #5. Скрещиваем родительские гены
+            population = combine_chromosomes(population=parents, new_size=new_pop, prob=prob)
 
-        start_population = population
-        epoch += 1
+            #6. Мутируем родительские гены (гены, передающиеся в функцию
+            # всё равно ссылаются на свою модель, поэтому мы ничеего не возвращаем)
+            mutate_population(population, 0.1)
+
+            start_population = population
+            epoch += 1
+        print(f"epoch: {epoch}, reward: {max(cur_rewards):.4f}")
+    return best_model.eval().state_dict()

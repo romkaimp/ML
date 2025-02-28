@@ -146,14 +146,14 @@ class GRUFrac(Predictor):
 
         x_frac = fdiff(x.reshape(batch_size, series_number), dim=-1, n=0.6, window=window).reshape(batch_size,
                                                                                                    series_number, 1)
-        x_frac = (((x_frac[:, window:, :] - x_frac[:, window:, :].mean()) / x_frac[:, window:, :].std())
+        x_frac = (((x_frac[:, window:, :] - torch.mean(x_frac[:, window:, :], dim=1)) / x_frac[:, window:, :].std())
         ).to(self.device)
         x_frac = torch.clamp(x_frac, min=-3, max=3)
 
         x_diff = torch.diff(x, n=1, dim=1)
-        x_diff = (x_diff[:, 1:, :] / x_diff[:, 1:, :].std()  # - x_diff[:, 1:, :].mean()
+        x_diff = (x_diff[:, 1:, :] / self.scale_d  # - x_diff[:, 1:, :].mean()
                   ).to(self.device)
-        x_diff = torch.clamp(x_diff, min=self.mean_d - 3, max=self.mean_d + 3)
+        x_diff = torch.clamp(x_diff, min=self.mean_d - 3*self.scale_d, max=self.mean_d + 3*self.scale_d)
 
         normalized_x = (x - x.mean().item()
                         ) / x.std().item()
