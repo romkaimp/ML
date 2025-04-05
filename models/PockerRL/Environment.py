@@ -44,6 +44,25 @@ class GameHistory:
         """
         return self.history[index]
 
+class Embeddings:
+    def __init__(self, cards, num_types):
+        self.cards = cards
+        self.num_types = num_types
+
+        assert cards % num_types == 0, "cards must be divisible by num_types"
+        self.card_dim = math.ceil(math.log2(cards / num_types + 1))  # 0 is reserved
+        self.type_dim = math.ceil(math.log2(num_types))
+        self.logic_matrix = self.generate_embeddings()
+
+    def generate_embeddings(self):
+        suits = np.array([[int(b) for b in format(i, f'0{self.type_dim}b')] for i in range(self.num_types)])
+        ranks = np.array(
+            [[int(b) for b in format(i + 1, f'0{self.card_dim}b')] for i in range(self.cards // self.num_types)])
+        deck = np.array([[*suit, *rank] for suit in suits for rank in ranks])
+        return deck
+
+
+
 class Deck:
     '''Базовый класс с колодами для разных игр'''
     def __init__(self, cards, num_types, names: Optional[dict] = None):
@@ -60,7 +79,7 @@ class Deck:
         self.type_dim = math.ceil(math.log2(num_types)) # logic types: cards and their types are heterogeneous
         # ~= ceil(log2(cards//num_types) + log2(num_types))
         #self.generate_cards()
-        self.logic_matrix = None #self.generate_logic_matrix()
+        self.logic_matrix = None
 
     def generate_cards(self):
         for i in range(self.num_types):
