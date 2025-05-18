@@ -53,6 +53,7 @@ class Embeddings:
         self.card_dim = math.ceil(math.log2(cards / num_types + 1))  # 0 is reserved
         self.type_dim = math.ceil(math.log2(num_types))
         self.logic_matrix = self.generate_embeddings()
+        self.dim = self.type_dim + self.card_dim
 
     def generate_embeddings(self):
         suits = np.array([[int(b) for b in format(i, f'0{self.type_dim}b')] for i in range(self.num_types)])
@@ -60,8 +61,6 @@ class Embeddings:
             [[int(b) for b in format(i + 1, f'0{self.card_dim}b')] for i in range(self.cards // self.num_types)])
         deck = np.array([[*suit, *rank] for suit in suits for rank in ranks])
         return deck
-
-
 
 class Deck:
     '''Базовый класс с колодами для разных игр'''
@@ -75,11 +74,8 @@ class Deck:
         assert len(names) == cards // num_types, "names size must equal cards/num_types"
         self.names = names
 
-        self.card_dim = math.ceil(math.log2(cards/num_types + 1)) # 0 is reserved
-        self.type_dim = math.ceil(math.log2(num_types)) # logic types: cards and their types are heterogeneous
-        # ~= ceil(log2(cards//num_types) + log2(num_types))
-        #self.generate_cards()
-        self.logic_matrix = None
+        self.embeddings = Embeddings(cards, num_types)
+        self.logic_matrix = self.embeddings.logic_matrix
 
     def generate_cards(self):
         for i in range(self.num_types):
@@ -90,14 +86,6 @@ class Deck:
                 else:
                     self.bank.append({"power": j, "type": i})
 
-    def generate_logic_matrix(self):
-        """Генерирует логическую матрицу размером (cards, embed_dim) с двоичными комбинациями."""
-        suits = np.array([[int(b) for b in format(i, f'0{self.type_dim}b')] for i in range(self.num_types)])
-        ranks = np.array([[int(b) for b in format(i + 1, f'0{self.card_dim}b')] for i in range(self.cards // self.num_types)])
-        deck = np.array([[*suit, *rank] for suit in suits for rank in ranks])
-
-        return deck
-
     def convert_cards(self, cards: np.ndarray) -> list:
         names = []
         for i in cards:
@@ -107,7 +95,7 @@ class Deck:
     def redo(self):
         self.bank = []
         self.generate_cards()
-        self.logic_matrix = self.generate_logic_matrix()
+        #self.logic_matrix = self.embeddings.logic_matrix
 
 class Poker(Deck):
     '''В этом классе реализуются особенности покерной колоды'''
@@ -133,20 +121,20 @@ class PokerHand(Enum):
         self.description = description
 
 class PokerHandEvaluator:
-    def __init__(self, hand, cards, num_types, verbose: bool = False):
+    def __init__(self, hand, embeddings: Embeddings, verbose: bool = False):
         """
         Принимает список карт (по 6 бит на каждую).
         """
         self.verbose = verbose
         self.hand = np.array(hand)
-        self.num_types = num_types
-        self.cards = cards
+
+        self.num_types = embeddings.num_types
+        self.cards = embeddings.cards
 
         self.suit_mask = np.zeros(self.num_types, dtype=int)  # Маска для мастей
         self.rank_mask = np.zeros(self.cards//self.num_types + 1, dtype=int)  # Маска для значений
 
-        self.card_dim = math.ceil(math.log2(cards / num_types))
-        self.type_dim = math.ceil(math.log2(num_types))
+        self.card_dim, self.type_dim = embeddings.card_dim, embeddings.type_dim
 
         self.max_rank = 0
 
@@ -311,7 +299,7 @@ class PokerGame(Poker):
         player_cards = self.players_banks[i] + self.table
         player_cards = list(map(lambda x: x[1], player_cards))
 
-        hand = PokerHandEvaluator(player_cards, self.cards, self.num_types)
+        hand = PokerHandEvaluator(player_cards, self.embeddings)
         hand_value, rank_value = hand.get_hand_rank(), hand.max_rank
         return hand_value, rank_value
 
@@ -359,9 +347,14 @@ if __name__ == '__main__':
     game.start_new_game()
 
     cards = [[0, 1, 0, 0, 1, 0],
-            [0, 1, 1, 0, 0, 1],]
+            [0, 1, 1, 0, 0, 1],
+             [0, 1, 0, 0, 1, 0]]
     print(game.convert_cards(cards))
 
+    hist = game.get_history()
+    hand_eval = PokerHandEvaluator(cards, game.embeddings)
+    print(hand_eval.get_hand_rank())
+    print(hist)
 
 
 
