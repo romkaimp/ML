@@ -5,6 +5,35 @@ from itertools import product
 from enum import Enum
 from copy import deepcopy
 
+class CardMast(Enum):
+    CLUBS = (1, "Clubs")
+    DIAMONDS = (2, "Diamonds")
+    HEARTS = (3, "Hearts")
+    SPADES = (4, "Spades")
+
+    def __init__(self, value, description):
+        self._value_ = value
+        self.description = description
+
+class CardPower(Enum):
+    TWO = (2, "Two")
+    THREE = (3, "Three")
+    FOUR = (4, "Four")
+    FIVE = (5, "Five")
+    SIX = (6, "Six")
+    SEVEN = (7, "Seven")
+    EIGHT = (8, "Eight")
+    NINE = (9, "Nine")
+    TEN = (10, "Ten")
+    JACK = (11, "Jack")
+    QUEEN = (12, "Queen")
+    KING = (13, "King")
+    ACE = (14, "Ace")
+
+    def __init__(self, value, description):
+        self._value_ = value
+        self.description = description
+
 class GameStateMomento:
     """
     Класс Memento — содержит состояние игры, которое можно сохранить.
@@ -324,6 +353,111 @@ class PokerGame(Poker):
 
         return winners
 
+class FoolGame(Deck):
+    def __init__(self, cards, num_types, num_cards, num_players, names: Optional[dict] = None, verbose: bool = False):
+        super().__init__(cards, num_types, names)
+        self.verbose = verbose
+        self.num_players = num_players
+        self.num_cards = num_cards
+
+        self.players_banks = None
+        self.history = None  # GameHistory()
+        self.busy_cards = None
+
+        self.round = 0
+        self.last_fool = None
+        self.cosir = None
+
+    def redo(self):
+        super().redo()
+        self.players_banks = [[] for _ in range(self.num_players)]
+
+        self.history = GameHistory()
+        self.busy_cards = []
+        if self.last_fool:
+            self.round = (self.last_fool + 1) % self.num_players
+            self.last_fool = None
+
+    def generate_power_matrix(self):
+        power_matrix = []
+        for i in range(self.num_types):
+            for j in range(self.cards // self.num_types):
+                pass
+
+
+
+    def get_cards(self):
+        for i in range(self.num_cards):
+            for j in range(self.num_players):
+                hash = np.random.randint(0, self.cards, 1)[0]
+                while hash in self.busy_cards:
+                    hash = np.random.randint(0, self.cards, 1)[0]
+                self.busy_cards.append(hash)
+
+                self.players_banks[j].append((self.bank[hash], self.logic_matrix[hash]))
+
+        hash = np.random.randint(0, self.cards, 1)[0]
+        while hash in self.busy_cards:
+            hash = np.random.randint(0, self.cards, 1)[0]
+        self.busy_cards.append(hash)
+
+        self.cosir = (self.bank[hash], self.logic_matrix[hash])
+
+    def get_cards_foreach(self, num_cards: int):
+        have_all = [False for _ in range(self.num_players)]
+        have_given = 0
+        while have_given < num_cards:
+            for j in range(self.num_players):
+                if len(self.players_banks[j]) >= self.num_cards:
+                    have_all[j] = True
+                    if all(have_all):
+                        have_given = num_cards
+                        break
+                    continue
+                if len(self.busy_cards) < self.cards:
+                    hash = np.random.randint(0, self.cards, 1)[0]
+                    while hash in self.busy_cards:
+                        hash = np.random.randint(0, self.cards, 1)[0]
+                    self.busy_cards.append(hash)
+
+                    self.players_banks[j].append((self.bank[hash], self.logic_matrix[hash]))
+                    have_given += 1
+                else:
+                    self.players_banks[j].append((self.cosir))
+                    have_given = num_cards
+                    break
+                if have_given >= num_cards:
+                    break
+
+    def start_new_game(self):
+        self.redo()
+
+        while not self.last_fool:
+            self.match()
+
+#TODO   def choose_card(self):
+
+#TODO   def match(self):
+
+class FoolRound:
+    def __init__(self, NN, cards, round):
+        self.table_attacking = []
+        self.table_defending = []
+        self.beaten = []
+
+        self.hidden_vec = None
+        self.player_cards = cards
+        self.round = round
+        self.num_players = len(cards)
+
+    def match(self):
+        output = self.NN(self.player_cards[round])
+        while output != "000000":
+            pass
+
+
+
+
 class BinaryOps:
     @staticmethod
     def list_to_bin(array) -> int:
@@ -341,20 +475,24 @@ class BinaryOps:
 
 
 if __name__ == '__main__':
-    names = {0: '2', 1: '3', 2: '4', 3: '5', 4: '6', 5: '7', 6: '8', 7: '9', 8: '10', 9: "jack", 10: "queen", 11: "king", 12: "ace"} #, 13: "d_ace", 14: "t_ace"}
-    game = PokerGame(52, 4, 2, 3, 2, 3, names=names)
+    # names = {0: '2', 1: '3', 2: '4', 3: '5', 4: '6', 5: '7', 6: '8', 7: '9', 8: '10', 9: "jack", 10: "queen", 11: "king", 12: "ace"} #, 13: "d_ace", 14: "t_ace"}
+    # game = PokerGame(52, 4, 2, 3, 2, 3, names=names)
+    #
+    # game.start_new_game()
+    #
+    # cards = np.array([[0, 1, 0, 0, 1, 0],
+    #         [0, 1, 1, 0, 0, 1],])
+    # print(game.convert_cards(cards))
+    # print(CardMast.keys)
 
-    game.start_new_game()
-
-    cards = [[0, 1, 0, 0, 1, 0],
-            [0, 1, 1, 0, 0, 1],
-             [0, 0, 0, 0, 1, 0]]
-    print(game.convert_cards(cards))
-
-    hist = game.get_history()
-    hand_eval = PokerHandEvaluator(cards, game.embeddings)
-    print(hand_eval.get_hand_rank())
-    print(hist)
-
-
-
+    names = {0: '6', 1: '7', 2: '8', 3: '9', 4: '10', 5: "jack", 6: "queen",
+             7: "king", 8: "ace"}
+    game = FoolGame(36, 4, 6, 3, names=names)
+    game.redo()
+    game.get_cards()
+    for player in game.players_banks:
+        print(len(player))
+    print("__________")
+    print(game.bank)
+    print("__________")
+    print(game.logic_matrix)
