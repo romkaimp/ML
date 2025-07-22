@@ -5,6 +5,9 @@ from itertools import product
 from enum import Enum
 from copy import deepcopy
 
+from numba.core.ir_utils import next_label
+
+
 class CardMast(Enum):
     CLUBS = (1, "Clubs")
     DIAMONDS = (2, "Diamonds")
@@ -50,6 +53,23 @@ class GameStateMomento:
     def __repr__(self):
         return str(self._state)
 
+class GameActionMomento:
+    """
+        Класс Memento — содержит действия игроков, которые можно сохранить.
+        """
+
+    def __init__(self, action: dict) -> None:
+        self._state = deepcopy(action)  # Создаем копию состояния для сохранения
+
+    def get_state(self) -> dict:
+        """
+        Метод для получения сохраненного состояния.
+        """
+        return deepcopy(self._state)
+
+    def __repr__(self):
+        return str(self._state)
+
 class GameHistory:
     """
     Хранитель (Caretaker) — отвечает за хранение всех сохраненных состояний.
@@ -58,7 +78,7 @@ class GameHistory:
         self.history: List[GameStateMomento] = []
         self.winner: List[int] = []
 
-    def save(self, momento: GameStateMomento) -> None:
+    def save(self, momento: Union[GameStateMomento, GameActionMomento]) -> None:
         """
         Сохраняем состояние игры в историю.
         """
@@ -67,7 +87,7 @@ class GameHistory:
     def set_winner(self, winner: List[int]) -> None:
         self.winner = winner
 
-    def restore(self, index: int) -> GameStateMomento:
+    def restore(self, index: int) -> Union[GameStateMomento, GameActionMomento]:
         """
         Получаем сохранённое состояние по индексу.
         """
@@ -95,6 +115,7 @@ class Deck:
     '''Базовый класс с колодами для разных игр'''
     def __init__(self, cards, num_types, names: Optional[dict] = None):
         self.bank = None #[]
+        self.raw_bank = None
 
         assert cards % num_types == 0, "cards must be divisible by num_types"
         self.cards = cards
@@ -114,8 +135,9 @@ class Deck:
                     self.bank.append({"power": self.names[j], "type": i})
                 else:
                     self.bank.append({"power": j, "type": i})
+                self.raw_bank.append({"power": j, "type": i})
 
-    def convert_cards(self, cards: np.ndarray) -> list:
+    def convert_cards(self, cards: np.ndarray) -> list[str]:
         names = []
         for i in cards:
             names.append(self.bank[np.argmax(self.logic_matrix @ i)])
@@ -123,6 +145,7 @@ class Deck:
 
     def redo(self):
         self.bank = []
+        self.raw_bank = []
         self.generate_cards()
         #self.logic_matrix = self.embeddings.logic_matrix
 
@@ -355,20 +378,69 @@ class PokerGame(Poker):
 
 class FoolGame(Deck):
     def __init__(self, cards, num_types, num_cards, num_players, names: Optional[dict] = None, verbose: bool = False):
+        """
+        Инициализирует игру в дурака.
+
+        Args:
+            cards (int): Общее количество карт в колоде
+            num_types (int): Количество мастей/типов карт
+            num_cards (int): Количество карт, которые получает каждый игрок в начале
+            num_players (int): Количество игроков
+            names (dict, optional): Словарь с названиями карт. По умолчанию None
+            verbose (bool): Флаг подробного вывода информации. По умолчанию False
+        """
         super().__init__(cards, num_types, names)
         self.verbose = verbose
         self.num_players = num_players
         self.num_cards = num_cards
 
-        self.players_banks = None
-        self.history = None  # GameHistory()
-        self.busy_cards = None
+        self.players_banks = [] # [num_players, a, 6]
+        self.players_info = [[] for i in range(num_players)] # [num_players, b, 6]
+        self.table = [] # [c, 6]
+        self.bita = [] # [d, 6]
+        self.target = [] # [e, 6]
+        self.finished_players = []
+
+        self.busy_cards = []
+        self.state_history = GameHistory()
+        self.h = []
 
         self.round = 0
+        self.role = 0
         self.last_fool = None
         self.cosir = None
+        self.power_matrix = None
+
+    def copy(self) -> 'FoolGame':
+        new_game = self.__class__(
+            self.cards,
+            self.num_types,
+            self.num_cards,
+            self.num_players,
+            deepcopy(self.names),  # Если names - mutable объект
+            self.verbose
+        )
+        new_game.redo()
+        new_game.players_banks = deepcopy(self.players_banks)
+        new_game.players_info = deepcopy(self.players_info)
+        new_game.table = deepcopy(self.table)
+        new_game.bita = deepcopy(self.bita)
+        new_game.target = deepcopy(self.target)
+        new_game.finished_players = deepcopy(self.finished_players)
+        new_game.busy_cards = deepcopy(self.busy_cards)
+        new_game.h = deepcopy(self.h)
+        new_game.role = self.role  # int - immutable, можно без deepcopy
+        new_game.round = self.round  # int - immutable
+        new_game.cosir = deepcopy(self.cosir)
+        new_game.state_history = deepcopy(self.state_history)  # Если есть
+
+        return new_game
 
     def redo(self):
+        """
+        Сбрасывает состояние игры для начала новой партии.
+        Сохраняет информацию о последнем дураке для определения первого хода.
+        """
         super().redo()
         self.players_banks = [[] for _ in range(self.num_players)]
 
@@ -377,16 +449,57 @@ class FoolGame(Deck):
         if self.last_fool:
             self.round = (self.last_fool + 1) % self.num_players
             self.last_fool = None
+        self.get_cards()
+
+    def save_game(self):
+        state_dict = {'players_banks': self.players_banks,
+                      'players_info': self.players_info,
+                      'table': self.table,
+                      'bita': self.bita,
+                      'target': self.target,
+                      'finished_players': self.finished_players,
+                      'busy_cards': self.busy_cards,
+                      'h': self.h,
+                      'role': self.role,
+                      'round': self.round,
+                      'cosir': self.cosir}
+        self.state_history.save(GameActionMomento(state_dict))
+
+    def retrieve(self, idx: int):
+        state_dict = self.state_history.restore(idx).get_state()
+        self.players_banks = state_dict['players_banks']
+        self.players_info = state_dict['players_info']
+        self.table = state_dict['table']
+        self.bita = state_dict['bita']
+        self.target = state_dict['target']
+        self.finished_players = state_dict['finished_players']
+        self.busy_cards = state_dict['busy_cards']
+        self.h = state_dict['h']
+        self.role = state_dict['role']
+        self.round = state_dict['round']
+        self.cosir = state_dict['cosir']
 
     def generate_power_matrix(self):
-        power_matrix = []
-        for i in range(self.num_types):
-            for j in range(self.cards // self.num_types):
-                pass
+        """
+        Генерирует матрицу силы карт, где каждая ячейка содержит количество карт,
+        которые может побить данная карта с учетом козыря.
+        """
+        power_matrix = [[0 for _ in range(self.cards // self.num_types)] for _ in range(self.num_types)]
+        for card in self.raw_bank:
+            if self.cosir[1]['type'] == card['type']:
+                func = lambda x: x['type'] != card['type'] or x['power'] < card['power']
+            else:
+                func = lambda x: x['power'] < card['power'] and x['type'] == card['type']
 
-
+            power_matrix[card['type']][card['power']] = \
+                len(tuple(filter(func, self.raw_bank)))
+        self.power_matrix = np.array(power_matrix)
 
     def get_cards(self):
+        """
+        Раздает начальные карты всем игрокам и определяет козырь.
+        Каждый игрок получает по num_cards карт.
+        """
         for i in range(self.num_cards):
             for j in range(self.num_players):
                 hash = np.random.randint(0, self.cards, 1)[0]
@@ -394,16 +507,27 @@ class FoolGame(Deck):
                     hash = np.random.randint(0, self.cards, 1)[0]
                 self.busy_cards.append(hash)
 
-                self.players_banks[j].append((self.bank[hash], self.logic_matrix[hash]))
+                self.players_banks[j].append((hash, self.bank[hash], self.raw_bank[hash], self.logic_matrix[hash]))
+                #self.players_banks[j].append(self.logic_matrix[hash])
 
         hash = np.random.randint(0, self.cards, 1)[0]
         while hash in self.busy_cards:
             hash = np.random.randint(0, self.cards, 1)[0]
         self.busy_cards.append(hash)
 
-        self.cosir = (self.bank[hash], self.logic_matrix[hash])
+        self.cosir = (hash, self.bank[hash], self.raw_bank[hash], self.logic_matrix[hash])
+        #self.cosir = [self.logic_matrix[hash]]
+
+        self.generate_power_matrix()
+        self.save_game()
 
     def get_cards_foreach(self, num_cards: int):
+        """
+        Добирает указанное количество карт каждому игроку до максимального количества.
+
+        Args:
+            num_cards (int): Количество карт, до которого нужно добрать каждому игроку
+        """
         have_all = [False for _ in range(self.num_players)]
         have_given = 0
         while have_given < num_cards:
@@ -428,35 +552,360 @@ class FoolGame(Deck):
                     break
                 if have_given >= num_cards:
                     break
+        self.save_game()
 
-    def start_new_game(self):
-        self.redo()
+    def can_beat(self, card1, card2):
+        """Проверяет, что карта 1 может покрыть карту 2"""
+        if self.power_matrix[card1[2]['type']][card1[2]['power']] > self.power_matrix[card2[2]['type']][card2[2]['power']]:
+            return True
+        else:
+            return False
 
-        while not self.last_fool:
-            self.match()
+    def can_beat_hash(self, card1_hash, card2_hash):
+        """Проверяет, что карта с хэшем 1 покрывает карту с хэшем 2"""
+        pow1 = self.raw_bank[card1_hash]['power']
+        pow2 = self.raw_bank[card2_hash]['power']
+        type1 = self.raw_bank[card1_hash]['type']
+        type2 = self.raw_bank[card2_hash]['type']
+        if self.power_matrix[type1][pow1] > self.power_matrix[type2][pow2]:
+            return True
+        else:
+            return False
 
-#TODO   def choose_card(self):
+    def on_table(self, cards_hash) -> tuple[list, int]:
+        """Принимает список хэшей карт. Проверяет атакующего, что карты данных рангов уже есть на столе.
+        Возвращает список правильных карт и штраф > 0 за нарушение правил"""
+        rew = 0
+        good_hashes = []
+        if len(cards_hash) == 0:
+            return [], -10
+        if self.table == [] and self.target == []:
+            cards_pow = [self.raw_bank[hash]['power'] for hash in cards_hash]
+            ok = cards_pow[0]
+            for i, card_pow in enumerate(cards_pow):
+                if card_pow == ok:
+                    good_hashes.append(cards_hash[i])
+                else:
+                    rew -= 5
+        else:
+            table_pow = [card[2]['power'] for card in self.table]
+            target_pow = [card[2]['power'] for card in self.target]
+            cards_pow = [self.raw_bank[hash]['power'] for hash in cards_hash]
+            for i, card_pow in enumerate(cards_pow):
+                pows = set(target_pow + table_pow)
+                if card_pow in pows:
+                    good_hashes.append(cards_hash[i])
+                else:
+                    rew -= 5
+        return good_hashes, rew
 
-#TODO   def match(self):
+    def check_validity_att(self, actions) -> int:
+        """Проверяет валидность действий атакующего, возвращает награду + штраф"""
+        reward = 0
+        old_round = self.round
+        if (self.round % self.num_players) in self.finished_players:
+            reward += 10
+            self.h.append("done")
+            self.round += 1
+            #print('1 out')
+            return reward
+        if actions[0] == self.cards:
+            if self.table == [] and self.target == []:
+                reward -= 100
+            self.add_information((self.round + 1) % self.num_players)
+            self.h.append("done")
+            self.round += 1
+            #print('2 out')
+        else:
+            good_actions, rew = self.in_hand_hash(actions, self.round % self.num_players)
+            reward += rew
+            good_actions, rew = self.on_table(good_actions)
+            reward += rew
+            if len(good_actions) == 0:
+                if len(self.h) > 0 and self.h[-1] == 'take':
+                    self.add_information((self.round + 1) % self.num_players)
+                    self.round += 1
+                self.h.append("done")
+                self.round += 1
+                self.bita += self.table
+                self.table = []
+                #print('3 out')
+            else:
 
-class FoolRound:
-    def __init__(self, NN, cards, round):
-        self.table_attacking = []
-        self.table_defending = []
-        self.beaten = []
+                self.target += [(act_hash, self.bank[act_hash], self.raw_bank[act_hash], self.logic_matrix[act_hash]) for act_hash in good_actions]
+                self.delete_information(self.round % self.num_players, self.target)
+                if len(self.h) > 0 and self.h[-1] == "take":
+                    self.h.append("done")
+                    self.round += 1
+                    self.add_information(self.round % self.num_players)
+                    self.round += 1
+                    #print('4 out')
+                else:
+                    self.h.append("attacked")
+                    self.round += 1
+                    self.role = (self.role + 1) % 2
+                    #print('5 out')
+        if len(self.players_banks[old_round % self.num_players]) == 0 and (old_round % self.num_players) not in self.finished_players:
+            reward += 100
+            self.finished_players.append(old_round % self.num_players)
+            if self.round == old_round:
+                self.round += 1
+        return reward
 
-        self.hidden_vec = None
-        self.player_cards = cards
-        self.round = round
-        self.num_players = len(cards)
+    def check_att_one_act(self, action: int) -> int:
+        """Проверяет валидность действия атакующего, возвращает награду + штраф"""
+        reward = 0
+        old_round = self.round
+        # Проверка, что игрок закончил ход
+        if (self.round % self.num_players) in self.finished_players:
+            reward = 0
+            self.h.append("done")
+            self.round += 1
+            #print('1 out')
+            return reward
 
-    def match(self):
-        output = self.NN(self.player_cards[round])
-        while output != "000000":
-            pass
+        # Случай завершения хода
+        if action == self.cards:
+            if self.table == [] and self.target == []:
+                reward -= 100
+            self.add_information((self.round + 1) % self.num_players)
+            self.h.append("done")
+            self.round += 1
+            #print('2 out')
+        # Случай продолжения атаки
+        else:
+            self.target += [(action, self.bank[action], self.raw_bank[action], self.logic_matrix[action])]
+            self.delete_information(self.round % self.num_players, self.target)
+            self.h.append("attacked")
+            #print('5 out')
+        # Проверка, закончил ли игрок колоду
+        if len(self.players_banks[old_round % self.num_players]) == 0 and (old_round % self.num_players) not in self.finished_players:
+            reward += 100
+            self.finished_players.append(old_round % self.num_players)
+            if self.round == old_round:
+                self.round += 1
+        return reward
 
+    def check_validity_def(self, actions) -> int:
+        """проверяет валидность действий защиты, возвращает награду + штраф"""
+        reward = 0
+        if actions[0] == self.cards:
+            #print("1 out d")
+            if len(self.target) == 0:
+                reward += 10
+                self.bita += self.table
+                self.table = []
+                self.role = (self.role + 1) % 2
+            else:
+                self.h.append("take")
+                self.round -= 1
+                self.role = (self.role + 1) % 2
+        else:
+            good_actions, rew = self.in_hand_hash(actions, self.round % self.num_players)
+            reward += rew
 
+            cards_hash = []
+            cards = []
+            unbeaten_cards = []
+            beaten_cards = []
+            covered = True
+            for target_card in self.target:
+                can_beat = False
+                for i, card_hash in enumerate(good_actions):
+                    if card_hash not in cards_hash:
+                        card = (card_hash, self.bank[card_hash], self.raw_bank[card_hash], self.logic_matrix[card_hash])
+                        if self.can_beat(card, target_card):
+                            can_beat = True
+                            beaten_cards.append(target_card)
+                            cards_hash += [card_hash]
+                            cards += [card]
+                            break
 
+                if not can_beat:
+                    unbeaten_cards.append(target_card)
+                    covered = False
+
+            if covered or len(self.players_banks[self.round % self.num_players]) == len(cards):
+                self.h.append("covered")
+                self.table += cards + beaten_cards
+                self.target = []
+                self.delete_information(self.round % self.num_players, cards)
+                self.role = (self.role + 1) % 2
+
+                if len(self.players_banks[self.round % self.num_players]) == 0:
+                    self.finished_players.append(self.round % self.num_players)
+                    reward += 100
+                    #print('4 out')
+
+                    self.bita += self.table
+                    self.players_banks[(self.round - 1) % self.num_players] += unbeaten_cards
+                    self.players_info[(self.round - 1) % self.num_players] += unbeaten_cards
+                    self.table = []
+                    return reward
+                reward += 20
+                self.round -= 1
+
+                #print("2 out d")
+            else:
+                self.h.append("take")
+                self.round -= 1
+                self.role = (self.role + 1) % 2
+                #print("3 out d")
+
+        return reward
+
+    def check_def_one_act(self, action: int) -> int:
+        """проверяет валидность действия защиты, возвращает награду + штраф"""
+        reward = 0
+        if action == self.cards:
+            #print("1 out d")
+            if len(self.target) == 0:
+                reward += 10
+                self.bita += self.table
+                self.table = []
+                self.role = (self.role + 1) % 2
+            else:
+                self.h.append("take")
+                self.round -= 1
+                self.role = (self.role + 1) % 2
+        else:
+            cards = []
+            new_tgt = []
+            covered = False
+            for target_card in self.target:
+                card = (action, self.bank[action], self.raw_bank[action], self.logic_matrix[action])
+                if self.can_beat(card, target_card) and not covered:
+                    self.table += [target_card] + [card]
+                    cards += [card]
+                    covered = True
+                else:
+                    new_tgt.append(target_card)
+            self.target = new_tgt
+            self.delete_information(self.round % self.num_players, cards)
+
+            if len(self.target) == 0 or len(self.players_banks[self.round % self.num_players]) == 0:
+                self.h.append("covered")
+
+                self.role = (self.role + 1) % 2
+
+                if len(self.players_banks[self.round % self.num_players]) == 0:
+                    self.finished_players.append(self.round % self.num_players)
+                    reward += 100
+                    #print('4 out')
+
+                    self.bita += self.table
+                    self.players_banks[(self.round - 1) % self.num_players] += self.target
+                    self.players_info[(self.round - 1) % self.num_players] += self.target
+                    self.target = []
+                    self.table = []
+                    return reward
+                reward += 20
+                self.round += 1
+                #print("2 out d")
+
+        return reward
+
+    def in_hand_hash(self, card_hashes, player_num):
+        """Проверяет, какие карты есть в руке, и возвращает имеющиеся карты и штраф > 0 за не имеющиеся"""
+        reward = 0
+        good_hashes = []
+        for i in self.players_banks[player_num]:
+            have = False
+            for card_hash in card_hashes:
+                if card_hash == i[0]:
+                    good_hashes.append(card_hash)
+                    have = True
+                    continue
+            if not have:
+                reward -= 10
+
+        return good_hashes, reward
+
+    def add_information(self, player_num):
+        """добавляет игроку player_num карты из target и table
+        и обнуляет target и table"""
+        self.players_info[player_num] += self.target + self.table
+        self.players_banks[player_num] += self.target + self.table
+        self.target = []
+        self.table = []
+
+    def delete_information(self, player_num, cards):
+        """Удаляет карты из информации игроков и из карт игрока"""
+        # Создаем списки индексов для удаления
+        to_delete_info = []
+        to_delete_banks = []
+
+        # Находим индексы для удаления в players_info
+        for i, card_info in enumerate(self.players_info[player_num]):
+            for card in cards:
+                if card[0] == card_info[0]:
+                    to_delete_info.append(i)
+                    break  # одна карта может совпасть только один раз
+
+        # Находим индексы для удаления в players_banks
+        for i, card_bank in enumerate(self.players_banks[player_num]):
+            for card in cards:
+                if card[0] == card_bank[0]:
+                    to_delete_banks.append(i)
+                    break  # одна карта может совпасть только один раз
+
+        # Удаляем элементы в обратном порядке, чтобы индексы не сдвигались
+        for i in sorted(to_delete_info, reverse=True):
+            del self.players_info[player_num][i]
+
+        for i in sorted(to_delete_banks, reverse=True):
+            del self.players_banks[player_num][i]
+
+    def step_many(self, actions: list[int], save=True) -> tuple[float, bool]:
+        actions = list(dict.fromkeys(actions))
+        if len(self.finished_players) == self.num_players - 1:
+            reward = 0
+            return reward, False
+        reward = 0
+        #print("round before:", self.round)
+        while self.round % self.num_players in self.finished_players:
+            self.round += 1
+        #print("player:", self.round % self.num_players)
+        #print("player cards:", [card[0] for card in self.players_banks[self.round % self.num_players]])
+        if self.role == 0: # Attacker
+            reward = self.check_validity_att(actions)
+        elif self.role == 1:
+            reward = self.check_validity_def(actions)
+        #print("round after:", self.round)
+        if save:
+            self.save_game()
+        return reward, True
+
+    def step(self, action: int, save: bool = True) -> tuple[float, bool, bool]:
+        """returns:
+        reward, match has ended, player has ended"""
+        reward = 0
+        player = self.round % self.num_players
+        if len(self.finished_players) == self.num_players - 1:
+            reward = -100
+            if player in self.finished_players:
+                terminal = True
+            else:
+                terminal = False
+            return reward, False, not terminal
+
+        #print("round before:", self.round)
+        while self.round % self.num_players in self.finished_players:
+            self.round += 1
+        #print("player:", self.round % self.num_players)
+        #print("player cards:", [card[0] for card in self.players_banks[self.round % self.num_players]])
+        if self.role == 0: # Attacker
+            reward = self.check_att_one_act(action)
+        elif self.role == 1:
+            reward = self.check_def_one_act(action)
+        #print("round after:", self.round)
+        if save:
+            self.save_game()
+        if player in self.finished_players:
+            terminal = True
+        else:
+            terminal = False
+        return reward, True, not terminal
 
 class BinaryOps:
     @staticmethod
@@ -472,6 +921,55 @@ class BinaryOps:
         binary_number = (1 << n) - 1
         return int(bin(binary_number)[2:], 2)
 
+class GameState:
+    def __init__(self, data, current_player, is_terminal=False):
+        self.data = data  # произвольное состояние (например, массив карт)
+        self.current_player = current_player  # int: 0, 1, 2
+        self.is_terminal = is_terminal
+
+    def get_legal_actions(self):
+        """Вернуть список допустимых действий в текущем состоянии"""
+        raise NotImplementedError
+
+    def apply_action(self, action):
+        """Применить действие и вернуть новое состояние"""
+        raise NotImplementedError
+
+    def evaluate(self):
+        """Возвращает оценку выигрыша для всех игроков"""
+        raise NotImplementedError
+
+class GameTreeNode:
+    def __init__(self, state: GameState, parent=None):
+        self.state = state                  # GameState
+        self.parent: GameTreeNode = parent                # родительский узел
+        self.action = action                # действие, которое привело к этому узлу
+        self.children = []                  # список дочерних узлов
+
+    def is_terminal(self):
+        return self.state.is_terminal
+
+    def expand(self):
+        """Создаёт дочерние узлы для всех допустимых действий"""
+        actions = self.state.get_legal_actions()
+        for action in actions:
+            next_state = self.state.apply_action(action)
+            child_node = GameTreeNode(next_state, parent=self, action=action)
+            self.children.append(child_node)
+
+    def match_previous_action(self) -> tuple[GameState, int]:
+        parent = self.parent
+        while parent.state.current_player != self.state.current_player:
+            action = parent.action
+            parent = parent.parent
+        if parent.parent.state.current_player == self.state.current_player:
+            return self.state, parent.parent.state['q_val'], parent.state['rew']
+
+    def traverse(self, depth=0):
+        """Рекурсивный обход дерева (для отладки)"""
+        print("  " * depth + f"Player {self.state.current_player}, Action: {self.action}")
+        for child in self.children:
+            child.traverse(depth + 1)
 
 
 if __name__ == '__main__':
@@ -483,16 +981,58 @@ if __name__ == '__main__':
     # cards = np.array([[0, 1, 0, 0, 1, 0],
     #         [0, 1, 1, 0, 0, 1],])
     # print(game.convert_cards(cards))
-    # print(CardMast.keys)
 
     names = {0: '6', 1: '7', 2: '8', 3: '9', 4: '10', 5: "jack", 6: "queen",
              7: "king", 8: "ace"}
     game = FoolGame(36, 4, 6, 3, names=names)
     game.redo()
-    game.get_cards()
-    for player in game.players_banks:
-        print(len(player))
-    print("__________")
-    print(game.bank)
-    print("__________")
-    print(game.logic_matrix)
+    # for player in game.players_banks:
+    #     print(len(player))
+    # print("__________")
+    # print("__________")
+    # print(game.power_matrix)
+    # print(game.raw_bank)
+    # print(game.cosir)
+    # print(game.busy_cards)
+    # print(game.players_banks)
+    # print(game.logic_matrix)
+    fake_actions = np.random.randint(0, 37, size=100)
+    print(fake_actions)
+    def card_holder2array(cards):
+        arr = []
+        for card in cards:
+            arr.append(card[3])
+        return arr
+    def card2d_holder2array(players):
+        arr = []
+        for i, player in enumerate(players):
+            arr.append([])
+            for card in player:
+                arr[i].append(card[3])
+        return arr
+
+    for i, action in enumerate(fake_actions):
+        print("action", action)
+        # print("role", game.role)
+        print("turn =", i)
+        print("finished -", game.finished_players)
+        print("banks:", card2d_holder2array(game.players_banks))
+        print("info:", card2d_holder2array(game.players_info))
+        print("table:", card_holder2array(game.table))
+        print("target:", card_holder2array(game.target))
+        print("bita:", card_holder2array(game.bita))
+
+        rew, next = game.step(action, False)
+        # print(rew)
+        # print(next)
+        # print("::::")
+        # print("finished:", game.finished_players)
+        for player in game.players_banks:
+            print(len(player))
+        # print(len(game.bita))
+        # print(len(game.table))
+        # print(len(game.target))
+        # print("__________")
+        # print()
+        if not next:
+            break
