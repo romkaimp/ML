@@ -667,7 +667,9 @@ class FoolGame(Deck):
         # Случай завершения хода
         if action == self.cards:
             if self.table == [] and self.target == []:
-                reward -= 100
+                reward = 0
+            else:
+                self.role = (self.role + 1) % 2
             self.add_information((self.round + 1) % self.num_players)
             self.h.append("done")
             self.round += 1
@@ -684,6 +686,9 @@ class FoolGame(Deck):
             self.finished_players.append(old_round % self.num_players)
             if self.round == old_round:
                 self.round += 1
+            #if self.target != []:
+            #    self.role = (1 + self.role) % 2
+
         return reward
 
     def check_validity_def(self, actions) -> int:
@@ -882,7 +887,8 @@ class FoolGame(Deck):
         reward = 0
         player = self.round % self.num_players
         if len(self.finished_players) == self.num_players - 1:
-            reward = -100
+            #TODO reward
+            reward = 1
             if player in self.finished_players:
                 terminal = True
             else:
@@ -905,6 +911,11 @@ class FoolGame(Deck):
             terminal = True
         else:
             terminal = False
+        finished_players = []
+        for i, player in enumerate(self.players_banks):
+            if len(player) == 0:
+                finished_players.append(i)
+        self.finished_players = finished_players
         return reward, True, not terminal
 
 class BinaryOps:
@@ -998,31 +1009,15 @@ if __name__ == '__main__':
     # print(game.logic_matrix)
     fake_actions = np.random.randint(0, 37, size=100)
     print(fake_actions)
-    def card_holder2array(cards):
-        arr = []
-        for card in cards:
-            arr.append(card[3])
-        return arr
-    def card2d_holder2array(players):
-        arr = []
-        for i, player in enumerate(players):
-            arr.append([])
-            for card in player:
-                arr[i].append(card[3])
-        return arr
 
     for i, action in enumerate(fake_actions):
         print("action", action)
         # print("role", game.role)
         print("turn =", i)
         print("finished -", game.finished_players)
-        print("banks:", card2d_holder2array(game.players_banks))
-        print("info:", card2d_holder2array(game.players_info))
-        print("table:", card_holder2array(game.table))
-        print("target:", card_holder2array(game.target))
-        print("bita:", card_holder2array(game.bita))
+        print('role:', game.role)
+        rew, next, player_finished = game.step(action, False)
 
-        rew, next = game.step(action, False)
         # print(rew)
         # print(next)
         # print("::::")
